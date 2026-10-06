@@ -165,10 +165,14 @@ input[type=email],input[type=password]{width:100%;border:1px solid var(--line);b
         </select>
       </label>
     </div>
-    <div class="row3">
-      <label class="f">Dato <input type="date" name="date" required></label>
-      <label class="f">Fra <input type="time" name="start"></label>
-      <label class="f">Til <input type="time" name="end"></label>
+    <div class="row">
+      <label class="f">Fra dato <input type="date" name="date" required></label>
+      <label class="f">Til dato <input type="date" name="endDate"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="allDay"> Hele dagen</label>
+    <div class="row" id="timeRow">
+      <label class="f">Fra kl. <input type="time" name="start"></label>
+      <label class="f">Til kl. <input type="time" name="end"></label>
     </div>
     <div>
       <div style="font-size:.85rem;color:var(--muted);margin-bottom:6px">Hvem gjelder det? (ingen valgt = hele familien)</div>
@@ -314,8 +318,13 @@ input[type=email],input[type=password]{width:100%;border:1px solid var(--line);b
   }
 
   async function connect(){
-    if(!window.supabase || SUPABASE_URL.startsWith("LIM_INN")){
+    if(SUPABASE_URL.startsWith("LIM_INN")){
       showLogin("Appen er ikke koblet til Supabase ennå. Fyll inn SUPABASE_URL og SUPABASE_KEY i index.html.");
+      $("#loginForm").querySelector("button").disabled=true;
+      return;
+    }
+    if(!window.supabase){
+      showLogin("Fikk ikke lastet inn Supabase-biblioteket. Sjekk nettforbindelsen, og slå av eventuell annonseblokkering for denne siden.");
       $("#loginForm").querySelector("button").disabled=true;
       return;
     }
@@ -347,14 +356,30 @@ input[type=email],input[type=password]{width:100%;border:1px solid var(--line);b
 
   // ---------- logikk ----------
   const memberById = id => state.members.find(m=>m.id===id);
+  const dayDiff = (a,b) => Math.round((parseIso(b)-parseIso(a))/864e5);
   function eventsOn(dateStr){
-    const d=parseIso(dateStr); const out=[];
+    const out=[];
     for(const [id,e] of Object.entries(state.events)){
       if(!e || !e.date) continue;
-      if(e.date===dateStr){ out.push({id,...e}); continue; }
-      if(e.repeat && dateStr>e.date && (!e.until || dateStr<=e.until) && parseIso(e.date).getDay()===d.getDay()) out.push({id,...e});
+      const span=Math.max(0, e.endDate ? dayDiff(e.date,e.endDate) : 0);
+      // Finn en forekomst som starter k dager før dateStr
+      for(let k=0;k<=span;k++){
+        const startStr=iso(addDays(parseIso(dateStr),-k));
+        if(startStr<e.date) continue;
+        const ok = startStr===e.date || (e.repeat && (!e.until || startStr<=e.until) && dayDiff(e.date,startStr)%7===0);
+        if(ok){ out.push({id,...e,_k:k,_span:span}); break; }
+      }
     }
-    return out.sort((a,b)=>(a.start||"").localeCompare(b.start||""));
+    const key = e => (e.allDay || (e._k>0)) ? "" : (e.start||"");
+    return out.sort((a,b)=>key(a).localeCompare(key(b)));
+  }
+  function timeLabel(e){
+    const n=e._span+1, part = n>1 ? ` · dag ${e._k+1} av ${n}` : "";
+    if(e.allDay || !e.start) return "Hele dagen"+part;
+    if(n===1) return esc(e.start)+(e.end?"–"+esc(e.end):"");
+    if(e._k===0) return "Fra "+esc(e.start)+part;
+    if(e._k===e._span) return (e.end?"Til "+esc(e.end):"Hele dagen")+part;
+    return "Hele dagen"+part;
   }
   function involves(e,mid){ return !e.who || !e.who.length || e.who.includes(mid); }
 
@@ -396,7 +421,7 @@ input[type=email],input[type=password]{width:100%;border:1px solid var(--line);b
       const isToday=ds===todayIso();
       const evHtml = evs.length ? evs.map(e=>{
         const c = (e.who && e.who.length===1 && memberById(e.who[0])) ? memberById(e.who[0]).color : "var(--ink)";
-        const time = e.start ? esc(e.start)+(e.end?"–"+esc(e.end):"") : "Hele dagen";
+        const time = timeLabel(e);
         const meta=[e.place?"📍 "+esc(e.place):"", e.driver?"🚗 "+esc(e.driver):"", e.repeat?"↻ ukentlig":""].filter(Boolean).join("&ensp;");
         return `<button class="ev" style="--c:${esc(c)}" data-ev="${esc(e.id)}" aria-label="${esc(e.title)} ${time}"><div class="t">${time}</div><div class="ti">${esc(e.cat||"")} ${esc(e.title)}</div>${meta?`<div class="meta">${meta}</div>`:""}${e.note?`<div class="meta">${esc(e.note)}</div>`:""}<div class="who">${whoTags(e)}</div></button>`;
       }).join("") : `<div class="empty">Ingen aktiviteter</div>`;
@@ -439,7 +464,10 @@ input[type=email],input[type=password]{width:100%;border:1px solid var(--line);b
     evForm.reset();
     evForm.title.value=e?.title||""; evForm.cat.value=e?.cat||"⚽";
     evForm.date.value=e?.date||date||todayIso();
+    evForm.endDate.value=e?.endDate||"";
+    evForm.allDay.checked=!!e?.allDay;
     evForm.start.value=e?.start||""; evForm.end.value=e?.end||"";
+    $("#timeRow").hidden=evForm.allDay.checked;
     evForm.place.value=e?.place||""; evForm.driver.value=e?.driver||"";
     evForm.repeat.checked=!!e?.repeat; evForm.until.value=e?.until||"";
     evForm.note.value=e?.note||"";
@@ -450,6 +478,8 @@ input[type=email],input[type=password]{width:100%;border:1px solid var(--line);b
     [...evForm.elements].forEach(el=>{ if(el.id!=="cancelBtn") el.disabled=readOnly; });
     evDlg.showModal();
   }
+  evForm.allDay.addEventListener("change",()=>$("#timeRow").hidden=evForm.allDay.checked);
+  evForm.date.addEventListener("change",()=>{ if(evForm.endDate.value && evForm.endDate.value<evForm.date.value) evForm.endDate.value=evForm.date.value; });
   evForm.repeat.addEventListener("change",()=>$("#untilWrap").hidden=!evForm.repeat.checked);
   $("#cancelBtn").onclick=()=>evDlg.close();
   $("#delBtn").onclick=()=>{
@@ -462,11 +492,14 @@ input[type=email],input[type=password]{width:100%;border:1px solid var(--line);b
     const f=evForm;
     const data={
       title:f.title.value.trim(), cat:f.cat.value, date:f.date.value,
-      start:f.start.value, end:f.end.value, place:f.place.value.trim(), driver:f.driver.value.trim(),
+      endDate:(f.endDate.value && f.endDate.value>f.date.value) ? f.endDate.value : "",
+      allDay:f.allDay.checked,
+      start:f.allDay.checked?"":f.start.value, end:f.allDay.checked?"":f.end.value, place:f.place.value.trim(), driver:f.driver.value.trim(),
       who:[...f.querySelectorAll('input[name=who]:checked')].map(x=>x.value),
       repeat:f.repeat.checked, until:f.repeat.checked?f.until.value:"", note:f.note.value.trim()
     };
     if(!data.title || !data.date) return;
+    if(f.endDate.value && f.endDate.value<f.date.value){ toast("Til-dato kan ikke være før fra-dato."); return; }
     putEvent(editingId||uid(), data);
     evDlg.close();
     const d=parseIso(data.date); if(d<weekStart || d>addDays(weekStart,6)){ weekStart=mondayOf(d); render(); }
